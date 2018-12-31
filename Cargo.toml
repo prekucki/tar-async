@@ -1,0 +1,10 @@
+[package]
+name = "tar-async"
+version = "0.1.0"
+authors = ["Przemysław K. Rekucki <przemyslaw.rekucki@golem.network>"]
+edition = "2018"
+
+[dependencies]
+tar="0.4.20"
+futures="0.1"
+bytes="0.4.11"
