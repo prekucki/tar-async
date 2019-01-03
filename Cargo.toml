@@ -16,4 +16,5 @@ tokio-fs="0.1.4"
 tokio-io="0.1.10"
 tokio-codec = "0.1.1"
 tokio-threadpool="0.1.9"
+structopt = "0.2"
 
