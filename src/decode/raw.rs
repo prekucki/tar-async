@@ -1,4 +1,4 @@
-use super::error::Error;
+use super::Error;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{prelude::*, try_ready};
 use tar::Header;
@@ -145,7 +145,7 @@ where
             if header.as_bytes().iter().all(|i| *i == 0) {
                 Ok(Async::Ready(Some(RawTarItem::EmptyHeader)))
             } else {
-                let size = match header.size() {
+                let size = match header.entry_size() {
                     Ok(size) => size,
                     Err(e) => return Err(Error::IoError(e)),
                 };

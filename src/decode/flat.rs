@@ -1,8 +1,10 @@
+use super::pax::{PaxAttributes, PaxDecoder};
 use super::raw::{self, RawTarItem};
 use super::Error;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{prelude::*, try_ready};
 use std::fmt::{self, Debug, Formatter};
+use std::mem;
 use std::path::Path;
 use std::{io, str};
 
@@ -11,18 +13,40 @@ fn bytes2path(bytes: &[u8]) -> io::Result<&Path> {
     Ok(Path::new(s))
 }
 
+fn gnu_str_buffer2vec(buf: Bytes) -> Vec<u8> {
+    match buf.last() {
+        Some(0) => &buf.as_ref()[..buf.len() - 1],
+        _ => buf.as_ref(),
+    }
+    .into()
+}
+
 pub struct TarEntry {
+    entry_type: tar::EntryType,
     path_bytes: Vec<u8>,
     link_bytes: Option<Vec<u8>>,
-    pax_extensions: Option<Vec<u8>>,
+    atime: Option<f64>,
+    ctime: Option<f64>,
+    mtime: f64,
+    uid: u64,
+    uname: Option<Vec<u8>>,
+    gid: u64,
+    gname: Option<Vec<u8>>,
     size: u64,
 }
 
 impl TarEntry {
+    #[inline]
+    pub fn entry_type(&self) -> tar::EntryType {
+        self.entry_type
+    }
+
+    #[inline]
     pub fn path(&self) -> io::Result<&Path> {
         bytes2path(self.path_bytes.as_slice())
     }
 
+    #[inline]
     pub fn link(&self) -> io::Result<Option<&Path>> {
         Ok(match self.link_bytes.as_ref() {
             Some(bytes) => Some(bytes2path(bytes)?),
@@ -30,8 +54,19 @@ impl TarEntry {
         })
     }
 
+    #[inline]
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    #[inline]
+    pub fn uid(&self) -> u64 {
+        self.uid
+    }
+
+    #[inline]
+    pub fn gid(&self) -> u64 {
+        self.gid
     }
 }
 
@@ -45,10 +80,15 @@ impl Debug for TarEntry {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            "path={:?}, link={:?}, size={:?}",
+            "Entry {} entry_type={:?} path={:?}, link={:?}, size={:?}, uid={}, gid={} {}",
+            '{',
+            self.entry_type(),
             self.path(),
             self.link(),
-            self.size()
+            self.size(),
+            self.uid(),
+            self.gid(),
+            '}'
         )
     }
 }
@@ -56,19 +96,24 @@ impl Debug for TarEntry {
 struct EntryStream<U> {
     upstream: U,
     buffer: Option<BytesMut>,
-    gnu_long_name: Option<Vec<u8>>,
-    gnu_long_link: Option<Vec<u8>>,
-    pax_extensions: Option<Vec<u8>>,
+    attributes: PaxAttributes,
     state: State,
     processed: u32,
 }
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug)]
 enum State {
     Clean,
     InGnuLongName,
     InGnuLongLink,
-    InPaxExtensions,
+    InPaxExtensions(Box<PaxDecoder>),
+}
+
+impl State {
+    #[inline]
+    fn take(&mut self) -> State {
+        mem::replace(self, State::Clean)
+    }
 }
 
 impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Error<E>>> Stream
@@ -101,9 +146,7 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
         EntryStream {
             upstream,
             buffer: None,
-            gnu_long_name: None,
-            gnu_long_link: None,
-            pax_extensions: None,
+            attributes: PaxAttributes::default(),
             state: State::Clean,
             processed: 0,
         }
@@ -113,29 +156,21 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
         &mut self,
         entry: tar::Header,
     ) -> Result<Async<Option<<Self as Stream>::Item>>, <Self as Stream>::Error> {
-        eprintln!("header={:?}, s={:?}", entry, self.state);
-        match (&self.state, self.buffer.take()) {
+        match (self.state.take(), self.buffer.take()) {
             (State::InGnuLongName, Some(buf)) => {
-                self.gnu_long_name = Some(buf.to_vec());
+                self.attributes.path = Some(gnu_str_buffer2vec(buf.freeze()));
             }
             (State::InGnuLongLink, Some(buf)) => {
-                self.gnu_long_link = Some(buf.to_vec());
+                self.attributes.link_path = Some(gnu_str_buffer2vec(buf.freeze()));
             }
-            (State::InPaxExtensions, Some(buf)) => {
-                self.pax_extensions = Some(buf.to_vec());
+            (State::InPaxExtensions(decoder), None) => {
+                self.attributes = decoder.into_attr();
             }
             (State::Clean, _) => {}
             _state => unreachable!(),
         };
-        self.state = State::Clean;
 
         if entry.as_gnu().is_some() && entry.entry_type().is_gnu_longname() {
-            if self.gnu_long_name.is_some() {
-                return Err(Error::Format(
-                    "two long name entries describing \
-                     the same member",
-                ));
-            }
             // TODO: Check max size
             self.buffer = Some(BytesMut::with_capacity(
                 entry.size().map_err(|e| Error::IoError(e))? as usize,
@@ -144,12 +179,6 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
             return self.poll_data();
         }
         if entry.as_gnu().is_some() && entry.entry_type().is_gnu_longlink() {
-            if self.gnu_long_link.is_some() {
-                return Err(Error::Format(
-                    "two long name entries describing \
-                     the same member",
-                ));
-            }
             self.buffer = Some(BytesMut::with_capacity(
                 entry.size().map_err(|e| Error::IoError(e))? as usize,
             ));
@@ -157,43 +186,89 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
             return self.poll_data();
         }
         if entry.as_ustar().is_some() && entry.entry_type().is_pax_local_extensions() {
-            if self.pax_extensions.is_some() {
-                return Err(Error::Format(
-                    "two pax extensions entries describing \
-                     the same member",
-                ));
-            }
-            self.buffer = Some(BytesMut::with_capacity(
-                entry.size().map_err(|e| Error::IoError(e))? as usize,
-            ));
-            self.state = State::InPaxExtensions;
+            self.buffer = None;
+            self.state = State::InPaxExtensions(Box::new(PaxDecoder::new()));
             return self.poll_data();
         }
 
+        if let Some(header) = entry.as_gnu() {
+            self.attributes.atime = header.atime().ok().map(|v| v as f64);
+            self.attributes.ctime = header.ctime().ok().map(|v| v as f64);
+        }
+
         let path_bytes = self
-            .gnu_long_name
+            .attributes
+            .path
             .take()
             .unwrap_or(entry.path_bytes().into());
         let link_bytes = self
-            .gnu_long_link
+            .attributes
+            .link_path
             .take()
             .or_else(|| entry.link_name_bytes().map(|b| b.into()));
-        let pax_extensions = self.pax_extensions.take();
+
+        let size = self
+            .attributes
+            .size
+            .take()
+            .unwrap_or(entry.size().map_err(|e| Error::IoError(e))?);
+
+        let uid = match self.attributes.uid.take() {
+            Some(uid) => uid,
+            None => entry.uid().map_err(|e| Error::IoError(e))?,
+        };
+        let gid = match self.attributes.gid.take() {
+            Some(gid) => gid,
+            None => entry.gid().map_err(|e| Error::IoError(e))?,
+        };
+        let mtime = match self.attributes.mtime.take() {
+            Some(mtime) => mtime,
+            None => entry.mtime().map_err(|e| Error::IoError(e))? as f64,
+        };
+
+        let ctime = self.attributes.ctime.take();
+        let atime = self.attributes.atime.take();
+
+        let uname = self
+            .attributes
+            .uname
+            .take()
+            .or_else(|| entry.username_bytes().map(|b| b.into()));
+        let gname = self
+            .attributes
+            .gname
+            .take()
+            .or_else(|| entry.groupname_bytes().map(|b| b.into()));
+
         Ok(Async::Ready(Some(TarItem::Entry(TarEntry {
+            entry_type: entry.entry_type(),
             path_bytes,
             link_bytes,
-            pax_extensions,
-            size: entry.size().map_err(|e| Error::IoError(e))?,
+            size,
+            gid,
+            uid,
+            mtime,
+            ctime,
+            atime,
+            uname,
+            gname,
         }))))
     }
 
     fn poll_data(
         &mut self,
     ) -> Result<Async<Option<<Self as Stream>::Item>>, <Self as Stream>::Error> {
-        assert_ne!(self.state, State::Clean);
         loop {
             match try_ready!(self.upstream.poll()) {
-                Some(RawTarItem::Chunk(bytes)) => self.buffer.as_mut().unwrap().put(bytes),
+                Some(RawTarItem::Chunk(bytes)) => match self.state {
+                    State::InGnuLongLink | State::InGnuLongName => {
+                        self.buffer.as_mut().unwrap().put(bytes)
+                    }
+                    State::InPaxExtensions(ref mut decoder) => decoder
+                        .decode(bytes)
+                        .map_err(|_| Error::Format("pax format"))?,
+                    _ => unreachable!(),
+                },
                 Some(RawTarItem::Header(header)) => return self.poll_next_header(header),
                 Some(RawTarItem::EmptyHeader) => return Err(Error::UnexpectedEof),
                 None => return Err(Error::UnexpectedEof),

@@ -52,6 +52,7 @@ impl PaxAttributes {
     }
 }
 
+#[derive(Debug)]
 pub struct PaxDecoder {
     attributes: PaxAttributes,
     buffer: BytesMut,
@@ -90,21 +91,21 @@ fn cut_record(bytes: &[u8]) -> Result<Option<(usize, &[u8], &[u8])>, ParseError>
         Some(v) => v,
         None => return Ok(None),
     };
-    let size = parse_size(size_bytes)?;
-    if size < size_bytes.len() as u64 {
+    let record_size = parse_size(size_bytes)?;
+    if record_size < size_bytes.len() as u64 {
         return Ok(None);
     }
 
-    let size = size - size_bytes.len() as u64;
-    if tail_bytes.len() as u64 >= size {
-        let size = size as usize;
+    let value_size = record_size - size_bytes.len() as u64;
+    if tail_bytes.len() as u64 >= value_size {
+        let size = value_size as usize;
         if tail_bytes[size - 1] != b'\n' {
             return Err(ParseError::ExpectedEol);
         }
         let record = &tail_bytes[1..size - 1];
         let tail = &tail_bytes[size..];
 
-        Ok(Some((size, record, tail)))
+        Ok(Some((record_size as usize, record, tail)))
     } else {
         Ok(None)
     }
@@ -120,21 +121,31 @@ impl PaxDecoder {
     }
 
     pub fn decode(&mut self, bytes: Bytes) -> Result<(), ParseError> {
+        eprintln!("adv={}, len={}", self.adv, self.buffer.len());
         if self.adv > 0 {
-            self.buffer.advance(mem::replace(&mut self.adv, 0))
+            self.buffer.advance(mem::replace(&mut self.adv, 0));
+            eprintln!(
+                "E adv={}, len={}, buf='{}'",
+                self.adv,
+                self.buffer.len(),
+                std::str::from_utf8(self.buffer.as_ref()).unwrap()
+            );
         }
         self.buffer.reserve(bytes.len());
         self.buffer.put(bytes);
+        eprintln!(
+            "E2 adv={}, len={}, buf='{}'",
+            self.adv,
+            self.buffer.len(),
+            std::str::from_utf8(self.buffer.as_ref()).unwrap()
+        );
         let mut bb = self.buffer.as_ref();
         loop {
-            eprintln!("bb={:?}", bb);
             if let Some((n, record, b)) = cut_record(bb)? {
-                eprintln!("data");
-                self.adv += n;
                 self.attributes.decode_record(record)?;
+                self.adv += n;
                 bb = b;
             } else {
-                eprintln!("no data");
                 break;
             }
         }
@@ -153,7 +164,9 @@ mod test {
 
     #[test]
     fn test_parse() {
-        let mut bytes = b"20 path=ala/ma/kota\n30 mtime=1546272612.201798006\n30 atime=1546272612.201798006\n30 ctime=1546272612.201798006\n".as_ref();
+        let mut bytes = b"20 path=ala/ma/kota\n30 mtime=1546272612.201798006\n30 atime=1546272612.201798006\n30 ctime=1546272612.20".as_ref();
+        let mut rest_bytes = b"1798006\n".as_ref();
+
         /*while bytes.len() > 0 {
             if let Some((n,a,b)) = cut_record(bytes).unwrap() {
                 eprintln!("record={} '{}'", n, std::str::from_utf8(a).unwrap());
@@ -167,34 +180,8 @@ mod test {
 
         let mut decoder = PaxDecoder::new();
         decoder.decode(Bytes::from_static(bytes)).unwrap();
+        decoder.decode(Bytes::from_static(rest_bytes)).unwrap();
         eprintln!("{:?}", decoder.into_attr())
-    }
-
-    #[test]
-    fn test_buf() {
-        let mut bm = BytesMut::new();
-        let kot = Bytes::from(b"ala ma kota\n".as_ref());
-
-        eprintln!("bm.cap={} {}", bm.capacity(), bm.len());
-        bm.reserve(kot.len() * 3);
-        bm.put(&kot);
-        bm.reserve(0);
-        bm.put(&kot);
-        bm.put(&kot);
-
-        eprintln!("bm.cap={} {}", bm.capacity(), bm.len());
-        eprintln!("bm='{}'", std::str::from_utf8(bm.as_ref()).unwrap());
-        bm.advance(kot.len() * 2);
-        eprintln!("bm.cap={} {}", bm.capacity(), bm.len());
-        eprintln!("bm='{}'", std::str::from_utf8(bm.as_ref()).unwrap());
-        bm.reserve(kot.len() * 2);
-        eprintln!("bm.cap={} {}", bm.capacity(), bm.len());
-        eprintln!("bm='{}'", std::str::from_utf8(bm.as_ref()).unwrap());
-
-        bm.put(&kot);
-        bm.put(&kot);
-        eprintln!("bm.cap={} {}", bm.capacity(), bm.len());
-        eprintln!("bm='{}'", std::str::from_utf8(bm.as_ref()).unwrap());
     }
 
 }

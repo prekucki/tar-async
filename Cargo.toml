@@ -18,3 +18,5 @@ tokio-codec = "0.1.1"
 tokio-threadpool="0.1.9"
 structopt = "0.2"
 
+[profile.release]
+lto=true
