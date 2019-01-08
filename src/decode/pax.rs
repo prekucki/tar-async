@@ -1,3 +1,4 @@
+use super::time;
 use bytes::{BufMut, Bytes, BytesMut};
 use failure::Fail;
 use std::str::FromStr;
@@ -15,15 +16,23 @@ pub enum ParseError {
     ExpectedEq,
     #[fail(display = "utf8 expected")]
     ExpectedUtf8,
+    #[fail(display = "invalid timestamp")]
+    InvalidTimestamp,
+}
+
+impl From<time::ParseError> for ParseError {
+    fn from(_: time::ParseError) -> Self {
+        ParseError::InvalidTimestamp
+    }
 }
 
 #[derive(Default, Debug)]
 pub struct PaxAttributes {
     pub path: Option<Vec<u8>>,
     pub link_path: Option<Vec<u8>>,
-    pub atime: Option<f64>,
-    pub ctime: Option<f64>,
-    pub mtime: Option<f64>,
+    pub atime: Option<time::FileTime>,
+    pub ctime: Option<time::FileTime>,
+    pub mtime: Option<time::FileTime>,
     pub uid: Option<u64>,
     pub uname: Option<Vec<u8>>,
     pub gid: Option<u64>,

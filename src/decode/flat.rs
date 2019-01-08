@@ -1,12 +1,13 @@
 use super::pax::{PaxAttributes, PaxDecoder};
 use super::raw::{self, RawTarItem};
+use super::time::FileTime;
 use super::Error;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{prelude::*, try_ready};
 use std::fmt::{self, Debug, Formatter};
 use std::mem;
 use std::path::Path;
-use std::{io, str};
+use std::{convert, io, str, time};
 
 fn bytes2path(bytes: &[u8]) -> io::Result<&Path> {
     let s = str::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -25,9 +26,9 @@ pub struct TarEntry {
     entry_type: tar::EntryType,
     path_bytes: Vec<u8>,
     link_bytes: Option<Vec<u8>>,
-    atime: Option<f64>,
-    ctime: Option<f64>,
-    mtime: f64,
+    atime: Option<FileTime>,
+    ctime: Option<FileTime>,
+    mtime: FileTime,
     uid: u64,
     uname: Option<Vec<u8>>,
     gid: u64,
@@ -68,6 +69,18 @@ impl TarEntry {
     pub fn gid(&self) -> u64 {
         self.gid
     }
+
+    pub fn mtime(&self) -> time::SystemTime {
+        self.mtime.into()
+    }
+
+    pub fn atime(&self) -> Option<time::SystemTime> {
+        self.atime.map(|t| t.into())
+    }
+
+    pub fn ctime(&self) -> Option<time::SystemTime> {
+        self.ctime.map(Into::into)
+    }
 }
 
 #[derive(Debug)]
@@ -80,7 +93,7 @@ impl Debug for TarEntry {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            "Entry {} entry_type={:?} path={:?}, link={:?}, size={:?}, uid={}, gid={} {}",
+            "Entry {} entry_type={:?} path={:?}, link={:?}, size={:?}, uid={}, gid={}, mtime={:?} ctime={:?} atime={:?} {}",
             '{',
             self.entry_type(),
             self.path(),
@@ -88,6 +101,9 @@ impl Debug for TarEntry {
             self.size(),
             self.uid(),
             self.gid(),
+            self.mtime,
+            self.ctime,
+            self.atime,
             '}'
         )
     }
@@ -192,8 +208,8 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
         }
 
         if let Some(header) = entry.as_gnu() {
-            self.attributes.atime = header.atime().ok().map(|v| v as f64);
-            self.attributes.ctime = header.ctime().ok().map(|v| v as f64);
+            self.attributes.atime = header.atime().ok().map(|v| v.into());
+            self.attributes.ctime = header.ctime().ok().map(|v| v.into());
         }
 
         let path_bytes = self
@@ -223,7 +239,7 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
         };
         let mtime = match self.attributes.mtime.take() {
             Some(mtime) => mtime,
-            None => entry.mtime().map_err(|e| Error::IoError(e))? as f64,
+            None => entry.mtime().map_err(|e| Error::IoError(e))?.into(),
         };
 
         let ctime = self.attributes.ctime.take();
