@@ -80,7 +80,7 @@ fn parse_str<T: FromStr>(bytes: &[u8]) -> Result<T, ParseError> {
 
     let s = str::from_utf8(bytes).map_err(|_| ParseError::ExpectedUtf8)?;
 
-    Ok(s.parse().map_err(|e| ParseError::ExpectedUtf8)?)
+    Ok(s.parse().map_err(|_e| ParseError::ExpectedUtf8)?)
 }
 
 fn parse_size(bytes: &[u8]) -> Result<u64, ParseError> {
@@ -173,8 +173,8 @@ mod test {
 
     #[test]
     fn test_parse() {
-        let mut bytes = b"20 path=ala/ma/kota\n30 mtime=1546272612.201798006\n30 atime=1546272612.201798006\n30 ctime=1546272612.20".as_ref();
-        let mut rest_bytes = b"1798006\n".as_ref();
+        let bytes = b"20 path=ala/ma/kota\n30 mtime=1546272612.201798006\n30 atime=1546272612.201798006\n30 ctime=1546272612.20".as_ref();
+        let rest_bytes = b"1798006\n".as_ref();
 
         /*while bytes.len() > 0 {
             if let Some((n,a,b)) = cut_record(bytes).unwrap() {

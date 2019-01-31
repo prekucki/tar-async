@@ -145,7 +145,7 @@ impl<E: Debug + Send + Sync + 'static, U: Stream<Item = RawTarItem, Error = Erro
                     Some(RawTarItem::Header(header)) => return self.poll_next_header(header),
                     None => return Ok(Async::Ready(None)),
                     Some(RawTarItem::Chunk(bytes)) => {
-                        return Ok(Async::Ready(Some(TarItem::Chunk(bytes))))
+                        return Ok(Async::Ready(Some(TarItem::Chunk(bytes))));
                     }
                     Some(RawTarItem::EmptyHeader) => (),
                 },

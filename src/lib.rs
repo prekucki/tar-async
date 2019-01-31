@@ -1,4 +1,6 @@
 pub mod decode;
+pub mod encode;
+
 mod error;
 
 pub use self::error::Error;

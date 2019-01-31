@@ -41,7 +41,7 @@ where
                 Ok(Async::Ready(Some(tail)))
             } else {
                 assert!(self.in_entry < std::usize::MAX as u64);
-                let mut chunk = tail.split_to(self.in_entry as usize);
+                let chunk = tail.split_to(self.in_entry as usize);
                 self.in_entry = 0;
                 self.tail = Some(tail);
                 Ok(Async::Ready(Some(chunk)))
